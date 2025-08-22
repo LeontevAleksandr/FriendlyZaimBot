@@ -10,7 +10,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, \
-    FSInputFile, ReplyKeyboardMarkup, KeyboardButton
+    FSInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -404,11 +404,25 @@ class LoanBot:
 
         self.register_handlers()
 
+    async def setup_bot_commands(self):
+        """Настройка меню команд бота"""
+        commands = [
+            BotCommand(command="start", description="🚀 Начать поиск займов"),
+            BotCommand(command="restart", description="🔄 Перезапустить бот"),
+            BotCommand(command="clear_profile", description="🗑️ Очистить профиль"),
+            BotCommand(command="help", description="ℹ️ Помощь и команды")
+        ]
+
+        await self.bot.set_my_commands(commands)
+        logger.info("Команды бота настроены")
+
     def get_settings_keyboard(self):
-        """Создает постоянную клавиатуру для изменения настроек профиля"""
+        """Создает постоянную клавиатуру для изменения настроек профиля и популярных предложений"""
         keyboard = ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(text="⚙️ Настройки профиля")]
+                [KeyboardButton(text="🔥 Популярные предложения")],
+                [KeyboardButton(text="⚙️ Настройки профиля")],
+                [KeyboardButton(text="🚀 Поделиться ботом")]
             ],
             resize_keyboard=True,
             persistent=True,
@@ -419,7 +433,15 @@ class LoanBot:
     def register_handlers(self):
         """Регистрация всех обработчиков"""
         self.dp.message.register(self.cmd_start, CommandStart())
+        self.dp.message.register(self.cmd_restart, Command("restart"))
+        self.dp.message.register(self.cmd_clear_profile, Command("clear_profile"))
+        self.dp.message.register(self.cmd_help, Command("help"))
         self.dp.message.register(self.handle_settings_button, F.text == "⚙️ Настройки профиля")
+        self.dp.message.register(self.handle_popular_offers_button, F.text == "🔥 Популярные предложения")
+        self.dp.message.register(self.handle_share_button, F.text == "🚀 Поделиться ботом")
+
+        self.dp.callback_query.register(self.popular_offer_callback, F.data.startswith("popular_"))
+        self.dp.callback_query.register(self.back_to_popular_callback, F.data == "back_to_popular")
         self.dp.callback_query.register(self.quick_search_callback, F.data.startswith("quick_search_"))
         self.dp.callback_query.register(self.change_profile_settings_callback, F.data == "change_profile_settings")
         self.dp.callback_query.register(self.edit_country_callback, F.data == "edit_country")
@@ -436,6 +458,8 @@ class LoanBot:
         self.dp.callback_query.register(self.prev_offer_callback, F.data == "prev_offer")
         self.dp.callback_query.register(self.back_to_offers_callback, F.data == "back_to_offers")
         self.dp.callback_query.register(self.change_params_callback, F.data == "change_params")
+        self.dp.callback_query.register(self.confirm_clear_profile_callback, F.data == "confirm_clear_profile")
+        self.dp.callback_query.register(self.share_bot_callback, F.data == "share_bot")
 
     async def handle_settings_button(self, message: Message, state: FSMContext):
         """Обработчик кнопки настроек профиля"""
@@ -464,7 +488,9 @@ class LoanBot:
     async def send_message_with_keyboard(self, chat_id: int, text: str, inline_keyboard: InlineKeyboardMarkup = None,
                                          parse_mode: str = "HTML"):
         """Отправляет сообщение с inline клавиатурой и устанавливает постоянную reply клавиатуру"""
-        # Сначала отправляем основное сообщение с inline клавиатурой
+        # Отправляем сообщение с inline клавиатурой И постоянной reply клавиатурой одновременно
+        settings_keyboard = self.get_settings_keyboard()
+
         message = await self.bot.send_message(
             chat_id=chat_id,
             text=text,
@@ -472,14 +498,284 @@ class LoanBot:
             parse_mode=parse_mode
         )
 
-        # Затем устанавливаем постоянную reply клавиатуру отдельным сообщением
-        settings_keyboard = self.get_settings_keyboard()
-        await self.bot.send_message(
+        # Устанавливаем постоянную reply клавиатуру отдельным техническим сообщением
+        tech_message = await self.bot.send_message(
             chat_id=chat_id,
+            text=".",  # Минимальное сообщение
             reply_markup=settings_keyboard
         )
 
+        # Сразу удаляем техническое сообщение
+        try:
+            await tech_message.delete()
+        except:
+            pass
+
         return message
+
+    async def popular_offer_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Обработчик популярных предложений с предустановленными критериями"""
+
+        offer_type = callback.data.split("_", 1)[1]
+
+        # Получаем или создаем профиль пользователя
+        profile = await self.profile_manager.get_or_create_profile(
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.first_name
+        )
+
+        # Предустановленные критерии для разных типов популярных предложений
+        if offer_type == "zero_percent":
+            # 0% займы
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 15000 if (profile.country or 'russia') == 'russia' else 150000,
+                'zero_percent_only': True,
+                'term': 14,
+                'payment_method': 'card'
+            }
+            search_text = "🆓 <b>ЗАЙМЫ БЕЗ ПЕРЕПЛАТ (0%)</b>"
+
+        elif offer_type == "instant":
+            # Быстрые займы на карту
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 10000 if (profile.country or 'russia') == 'russia' else 100000,
+                'zero_percent_only': False,
+                'term': 7,
+                'payment_method': 'card'
+            }
+            search_text = "💳 <b>ДЕНЬГИ НА КАРТУ ЗА 5 МИНУТ</b>"
+
+        elif offer_type == "cash":
+            # Наличные
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 20000 if (profile.country or 'russia') == 'russia' else 200000,
+                'zero_percent_only': False,
+                'term': 14,
+                'payment_method': 'cash'
+            }
+            search_text = "💵 <b>НАЛИЧНЫЕ В РУКИ</b>"
+
+        elif offer_type == "big_amount":
+            # Большие суммы
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 50000 if (profile.country or 'russia') == 'russia' else 500000,
+                'zero_percent_only': False,
+                'term': 30,
+                'payment_method': 'card'
+            }
+            search_text = "🚀 <b>БОЛЬШИЕ СУММЫ (до 500К)</b>"
+
+        elif offer_type == "no_docs":
+            # Без документов
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 15000 if (profile.country or 'russia') == 'russia' else 150000,
+                'zero_percent_only': False,
+                'term': 14,
+                'payment_method': 'card'
+            }
+            search_text = "⚡ <b>БЕЗ СПРАВОК И ПОРУЧИТЕЛЕЙ</b>"
+
+        elif offer_type == "bad_credit":
+            # Плохая КИ
+            search_criteria = {
+                'country': profile.country or 'russia',
+                'age': profile.age or 30,
+                'amount': 10000 if (profile.country or 'russia') == 'russia' else 100000,
+                'zero_percent_only': False,
+                'term': 14,
+                'payment_method': 'card'
+            }
+            search_text = "🛡️ <b>ПЛОХАЯ КИ? НЕ ПРОБЛЕМА!</b>"
+
+        elif offer_type == "russia":
+            # Для России
+            search_criteria = {
+                'country': 'russia',
+                'age': profile.age or 30,
+                'amount': 25000,
+                'zero_percent_only': False,
+                'term': 14,
+                'payment_method': 'card'
+            }
+            search_text = "🇷🇺 <b>ЗАЙМЫ ДЛЯ РОССИИ</b>"
+
+        elif offer_type == "kazakhstan":
+            # Для Казахстана
+            search_criteria = {
+                'country': 'kazakhstan',
+                'age': profile.age or 30,
+                'amount': 250000,
+                'zero_percent_only': False,
+                'term': 14,
+                'payment_method': 'card'
+            }
+            search_text = "🇰🇿 <b>ЗАЙМЫ ДЛЯ КАЗАХСТАНА</b>"
+
+        else:
+            await callback.answer("❌ Неизвестный тип предложения", show_alert=True)
+            return
+
+        # Создаем сессию для аналитики
+        session_id = await self.analytics.track_session_start(
+            callback.from_user.id,
+            search_criteria['age'],
+            search_criteria['country']
+        )
+
+        # Сохраняем критерии в состоянии
+        await state.update_data(**search_criteria, session_id=session_id)
+
+        # Ищем офферы по критериям
+        offers = self.offer_manager.get_filtered_offers(search_criteria)
+
+        if not offers:
+            # Если нет подходящих офферов
+            no_offers_text = (
+                f"{search_text}\n\n"
+                "😔 <b>Пока нет доступных предложений</b>\n\n"
+                "Попробуйте другие варианты или настройте поиск вручную:"
+            )
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔥 Другие популярные", callback_data="back_to_popular")],
+                [InlineKeyboardButton(text="🔄 Настроить вручную", callback_data="back_to_main")]
+            ])
+
+            await callback.message.edit_text(no_offers_text, reply_markup=keyboard, parse_mode="HTML")
+            await callback.answer()
+            return
+
+        # Удаляем сообщение с популярными предложениями
+        try:
+            await callback.message.delete()
+            logger.info(f"Удалено сообщение с популярными предложениями: {callback.message.message_id}")
+        except Exception as e:
+            logger.error(f"Не удалось удалить сообщение с популярными: {e}")
+
+        # Сохраняем найденные офферы
+        await state.update_data(
+            found_offers=offers,
+            current_offer_index=0
+        )
+
+        # Трекинг показанного оффера
+        if session_id:
+            await self.analytics.track_offers_shown(session_id, [offers[0]['id']])
+
+        # Показываем первый оффер
+        await self.show_single_offer(callback.message, state, offers[0], 0, len(offers))
+        await state.set_state(LoanFlow.viewing_offers)
+
+        await callback.answer(f"🔥 Найдено {len(offers)} популярных предложений!")
+
+    async def back_to_popular_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Возврат к популярным предложениям"""
+        popular_text = (
+            "🔥 <b>ПОПУЛЯРНЫЕ ПРЕДЛОЖЕНИЯ</b>\n\n"
+            "💰 <b>Топ займы с максимальным одобрением!</b>\n"
+            "⚡ Деньги на карту за 5 минут\n"
+            "✅ Одобряем 95% заявок\n"
+            "🆓 0% для новых клиентов\n\n"
+            "🎯 <b>Выберите что вас интересует:</b>"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🆓 ЗАЙМЫ 0% (БЕЗ ПЕРЕПЛАТ)", callback_data="popular_zero_percent"),
+            ],
+            [
+                InlineKeyboardButton(text="💳 НА КАРТУ ЗА 5 МИНУТ", callback_data="popular_instant"),
+                InlineKeyboardButton(text="💵 НАЛИЧНЫМИ В РУКИ", callback_data="popular_cash")
+            ],
+            [
+                InlineKeyboardButton(text="🚀 БОЛЬШИЕ СУММЫ (до 500К)", callback_data="popular_big_amount"),
+                InlineKeyboardButton(text="⚡ БЕЗ СПРАВОК И ПОРУЧИТЕЛЕЙ", callback_data="popular_no_docs")
+            ],
+            [
+                InlineKeyboardButton(text="🛡️ ПЛОХАЯ КИ? НЕ ПРОБЛЕМА!", callback_data="popular_bad_credit"),
+            ],
+            [
+                InlineKeyboardButton(text="🇷🇺 Для России", callback_data="popular_russia"),
+                InlineKeyboardButton(text="🇰🇿 Для Казахстана", callback_data="popular_kazakhstan")
+            ]
+        ])
+
+        # Используем edit_text вместо вызова handle_popular_offers_button
+        await callback.message.edit_text(popular_text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+
+    async def handle_popular_offers_button(self, message: Message, state: FSMContext):
+        """ИСПРАВЛЕННЫЙ обработчик кнопки популярных предложений - сразу показываем меню выбора"""
+
+        popular_text = (
+            "🔥 <b>ПОПУЛЯРНЫЕ ПРЕДЛОЖЕНИЯ</b>\n\n"
+            "💰 <b>Топ займы с максимальным одобрением!</b>\n"
+            "⚡ Деньги на карту за 5 минут\n"
+            "✅ Одобряем 95% заявок\n"
+            "🆓 0% для новых клиентов\n\n"
+            "🎯 <b>Выберите что вас интересует:</b>"
+        )
+
+        # Самые конвертящие кнопки для максимального привлечения
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🆓 ЗАЙМЫ 0% (БЕЗ ПЕРЕПЛАТ)", callback_data="popular_zero_percent"),
+            ],
+            [
+                InlineKeyboardButton(text="💳 НА КАРТУ ЗА 5 МИНУТ", callback_data="popular_instant"),
+                InlineKeyboardButton(text="💵 НАЛИЧНЫМИ В РУКИ", callback_data="popular_cash")
+            ],
+            [
+                InlineKeyboardButton(text="🚀 БОЛЬШИЕ СУММЫ (до 500К)", callback_data="popular_big_amount"),
+                InlineKeyboardButton(text="⚡ БЕЗ СПРАВОК И ПОРУЧИТЕЛЕЙ", callback_data="popular_no_docs")
+            ],
+            [
+                InlineKeyboardButton(text="🛡️ ПЛОХАЯ КИ? НЕ ПРОБЛЕМА!", callback_data="popular_bad_credit"),
+            ],
+            [
+                InlineKeyboardButton(text="🇷🇺 Для России", callback_data="popular_russia"),
+                InlineKeyboardButton(text="🇰🇿 Для Казахстана", callback_data="popular_kazakhstan")
+            ]
+        ])
+
+        # ИСПРАВЛЕНИЕ: Отправляем ТОЛЬКО меню выбора, без промежуточного сообщения
+        await message.answer(popular_text, reply_markup=keyboard, parse_mode="HTML")
+
+    async def handle_share_button(self, message: Message, state: FSMContext):
+        """Обработчик кнопки поделиться ботом"""
+
+        bot_username = (await self.bot.get_me()).username
+        share_url = f"https://t.me/{bot_username}"
+
+        share_text = (
+            "🚀 <b>Поделитесь ботом с друзьями!</b>\n\n"
+            "💰 Этот бот поможет найти выгодные займы:\n"
+            "✅ До 500,000₸ / 50,000₽ на карту\n"
+            "⚡ Одобрение за 5 минут\n"
+            "🆓 0% для новых клиентов\n"
+            "🛡️ Работает даже с плохой КИ\n\n"
+            f"🔗 <b>Ссылка на бота:</b>\n<code>{share_url}</code>\n\n"
+            "👆 Нажмите на ссылку чтобы скопировать"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📱 Поделиться в Telegram",
+                                  url=f"https://t.me/share/url?url={share_url}&text=💰 Найди выгодный займ за 30 секунд! До 500К на карту за 5 минут.")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
+        ])
+
+        await message.answer(share_text, reply_markup=keyboard, parse_mode="HTML")
 
     async def edit_message_with_keyboard(self, message: Message, text: str,
                                          inline_keyboard: InlineKeyboardMarkup = None, parse_mode: str = "HTML"):
@@ -504,6 +800,14 @@ class LoanBot:
 
     async def cmd_start(self, message: Message, state: FSMContext):
         """Стартовое сообщение с проверкой существующего профиля"""
+
+        # ДОБАВЛЯЕМ: Трекинг пользователя
+        await self.analytics.track_user_start(
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.first_name
+        )
+
         profile = await self.profile_manager.get_or_create_profile(
             message.from_user.id,
             message.from_user.username,
@@ -551,8 +855,12 @@ class LoanBot:
 
             await state.set_state(LoanFlow.choosing_country)
 
-        # Отправляем сообщение с inline клавиатурой и устанавливаем постоянную reply клавиатуру
-        await self.send_message_with_keyboard(message.chat.id, welcome_text, keyboard)
+        # ИСПРАВЛЯЕМ: Используем простую отправку сообщения
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+        # Устанавливаем постоянную клавиатуру отдельно
+        settings_keyboard = self.get_settings_keyboard()
+        await message.answer("⬇️ Используйте кнопки ниже:", reply_markup=settings_keyboard)
 
     async def quick_search_callback(self, callback: CallbackQuery, state: FSMContext):
         """Быстрый поиск для возвращающихся пользователей"""
@@ -1113,7 +1421,8 @@ class LoanBot:
             # Создаем кнопку с прямой ссылкой - МАКСИМАЛЬНАЯ КОНВЕРСИЯ
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 ПОЛУЧИТЬ ДЕНЬГИ СЕЙЧАС!", url=personalized_link)],
-                [InlineKeyboardButton(text="🔙 Посмотреть другие варианты", callback_data="back_to_offers")]
+                [InlineKeyboardButton(text="🔙 Посмотреть другие варианты", callback_data="back_to_offers")],
+                [InlineKeyboardButton(text="🚀 Поделиться ботом", callback_data="share_bot")]
             ])
 
             # Простое сообщение об успешном выборе - БЕЗ лишних деталей
@@ -1246,8 +1555,155 @@ class LoanBot:
 
         await callback.answer("🔄 Изменяем условия поиска!")
 
+    async def cmd_restart(self, message: Message, state: FSMContext):
+        """Команда для полного рестарта бота"""
+        await state.clear()
+
+        restart_text = (
+            "🔄 <b>Бот перезапущен!</b>\n\n"
+            "Все данные сессии очищены.\n"
+            "Ваш профиль остался сохранен.\n\n"
+            "Начнем заново?"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 НАЧАТЬ ПОИСК ЗАЙМОВ", callback_data="back_to_main")]
+        ])
+
+        await message.answer(restart_text, reply_markup=keyboard, parse_mode="HTML")
+
+    async def cmd_clear_profile(self, message: Message, state: FSMContext):
+        """Команда для очистки профиля пользователя"""
+        try:
+            await self.profile_manager.clear_profile(message.from_user.id)
+            await state.clear()
+
+            clear_text = (
+                "🗑️ <b>Профиль очищен!</b>\n\n"
+                "✅ Все ваши данные удалены\n"
+                "✅ Настройки сброшены\n"
+                "✅ Статистика сохранена\n\n"
+                "Настроим профиль заново?"
+            )
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🇷🇺 Россия", callback_data="country_russia")],
+                [InlineKeyboardButton(text="🇰🇿 Казахстан", callback_data="country_kazakhstan")]
+            ])
+
+            await message.answer(clear_text, reply_markup=keyboard, parse_mode="HTML")
+            await state.set_state(LoanFlow.choosing_country)
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки профиля: {e}")
+            await message.answer("❌ Ошибка очистки профиля. Попробуйте позже.")
+
+    async def cmd_my_stats(self, message: Message, state: FSMContext):
+        """Команда заглушка - статистика отключена для клиентов"""
+        await message.answer(
+            "📊 <b>Статистика временно недоступна</b>\n\n"
+            "Используйте другие команды для управления ботом:",
+            parse_mode="HTML"
+        )
+
+    async def cmd_help(self, message: Message, state: FSMContext):
+        """Команда помощи с доступными командами"""
+        help_text = (
+            "ℹ️ <b>Доступные команды:</b>\n\n"
+            "🚀 /start - Начать работу с ботом\n"
+            "🔄 /restart - Перезапустить бот\n"
+            "🗑️ /clear_profile - Очистить профиль\n"
+            "ℹ️ /help - Эта справка\n\n"
+            "📱 <b>Кнопки:</b>\n"
+            "🔥 Популярные предложения - Быстрый поиск\n"
+            "⚙️ Настройки профиля - Управление данными\n\n"
+            "💡 <b>Совет:</b> Сохраните настройки профиля для быстрого поиска займов!"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 НАЙТИ ЗАЙМЫ", callback_data="back_to_main")]
+        ])
+
+        await message.answer(help_text, reply_markup=keyboard, parse_mode="HTML")
+
+    async def confirm_clear_profile_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Подтверждение очистки профиля через inline кнопку"""
+        confirm_text = (
+            "⚠️ <b>Подтверждение очистки</b>\n\n"
+            "Вы действительно хотите удалить:\n"
+            "• Сохраненную страну\n"
+            "• Возраст\n"
+            "• Все настройки профиля\n\n"
+            "❗ Статистика поиска сохранится"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, очистить", callback_data="execute_clear_profile"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_main")
+            ]
+        ])
+
+        await callback.message.edit_text(confirm_text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+
+    async def execute_clear_profile_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Выполнение очистки профиля после подтверждения"""
+        try:
+            await self.profile_manager.clear_profile(callback.from_user.id)
+            await state.clear()
+
+            success_text = (
+                "✅ <b>Профиль успешно очищен!</b>\n\n"
+                "🔄 Все настройки сброшены\n"
+                "📊 Статистика сохранена\n\n"
+                "Настроим профиль заново?"
+            )
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🇷🇺 Россия", callback_data="country_russia")],
+                [InlineKeyboardButton(text="🇰🇿 Казахстан", callback_data="country_kazakhstan")]
+            ])
+
+            await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+            await state.set_state(LoanFlow.choosing_country)
+            await callback.answer("✅ Профиль очищен!")
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки профиля: {e}")
+            await callback.answer("❌ Ошибка очистки профиля", show_alert=True)
+
+    async def share_bot_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Callback для кнопки поделиться ботом"""
+
+        bot_username = (await self.bot.get_me()).username
+        share_url = f"https://t.me/{bot_username}"
+
+        share_text = (
+            "🚀 <b>Поделитесь ботом с друзьями!</b>\n\n"
+            "💰 Этот бот поможет найти выгодные займы:\n"
+            "✅ До 500,000₸ / 50,000₽ на карту\n"
+            "⚡ Одобрение за 5 минут\n"
+            "🆓 0% для новых клиентов\n"
+            "🛡️ Работает даже с плохой КИ\n\n"
+            f"🔗 <b>Ссылка на бота:</b>\n<code>{share_url}</code>\n\n"
+            "👆 Нажмите на ссылку чтобы скопировать"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📱 Поделиться в Telegram",
+                                  url=f"https://t.me/share/url?url={share_url}&text=💰 Найди выгодный займ за 30 секунд! До 500К на карту за 5 минут.")],
+            [InlineKeyboardButton(text="🔙 Назад к займу", callback_data="back_to_offers")]
+        ])
+
+        await callback.message.edit_text(share_text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer()
+
     async def start_polling(self):
         """Запуск бота"""
+        # Настраиваем меню команд при запуске
+        await self.setup_bot_commands()
+
         logger.info("🚀 Бот запущен!")
         await self.dp.start_polling(self.bot)
 
