@@ -5,11 +5,10 @@ import os
 import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, \
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, \
     FSInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -66,22 +65,16 @@ class AnalyticsTracker:
         cursor = conn.cursor()
 
         try:
-            # Пытаемся обновить существующего пользователя
             cursor.execute("""
-                UPDATE users 
-                SET last_activity = CURRENT_TIMESTAMP,
-                    username = ?,
-                    first_name = ?
+                UPDATE users SET last_activity = CURRENT_TIMESTAMP, username = ?, first_name = ?
                 WHERE telegram_id = ?
             """, (username, first_name, user_id))
 
-            # Если пользователя не было, создаем нового
             if cursor.rowcount == 0:
                 cursor.execute("""
                     INSERT INTO users (telegram_id, username, first_name, last_activity)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 """, (user_id, username, first_name))
-
                 logger.info(f"Новый пользователь: {user_id} ({username})")
 
             conn.commit()
@@ -96,17 +89,14 @@ class AnalyticsTracker:
         cursor = conn.cursor()
 
         try:
-            # Получаем ID пользователя из таблицы users
             cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
             user_row = cursor.fetchone()
 
             if not user_row:
-                logger.error(f"Пользователь {user_id} не найден в БД")
                 return None
 
             db_user_id = user_row[0]
 
-            # Создаем новую сессию (используем вашу структуру)
             cursor.execute("""
                 INSERT INTO sessions (user_id, age, country, session_start)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -114,16 +104,12 @@ class AnalyticsTracker:
 
             session_id = cursor.lastrowid
 
-            # Увеличиваем счетчик сессий пользователя
             cursor.execute("""
-                UPDATE users 
-                SET total_sessions = total_sessions + 1,
-                    last_activity = CURRENT_TIMESTAMP
+                UPDATE users SET total_sessions = total_sessions + 1, last_activity = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (db_user_id,))
 
             conn.commit()
-
             logger.info(f"Новая сессия: user={user_id}, session={session_id}")
             return session_id
 
@@ -139,19 +125,12 @@ class AnalyticsTracker:
             return
 
         conn = self.get_connection()
-        cursor = conn.cursor()
-
         try:
+            cursor = conn.cursor()
             offers_json = json.dumps(offer_ids)
-            cursor.execute("""
-                UPDATE sessions 
-                SET shown_offers = ?
-                WHERE id = ?
-            """, (offers_json, session_id))
-
+            cursor.execute("UPDATE sessions SET shown_offers = ? WHERE id = ?", (offers_json, session_id))
             conn.commit()
             logger.info(f"Показаны офферы в сессии {session_id}: {offer_ids}")
-
         except Exception as e:
             logger.error(f"Ошибка сохранения показанных офферов: {e}")
         finally:
@@ -163,17 +142,10 @@ class AnalyticsTracker:
             return
 
         conn = self.get_connection()
-        cursor = conn.cursor()
-
         try:
-            cursor.execute("""
-                UPDATE sessions 
-                SET amount_requested = ?
-                WHERE id = ?
-            """, (amount, session_id))
-
+            cursor = conn.cursor()
+            cursor.execute("UPDATE sessions SET amount_requested = ? WHERE id = ?", (amount, session_id))
             conn.commit()
-
         except Exception as e:
             logger.error(f"Ошибка сохранения параметров сессии: {e}")
         finally:
@@ -185,42 +157,31 @@ class AnalyticsTracker:
         cursor = conn.cursor()
 
         try:
-            # Получаем ID пользователя из таблицы users
             cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
             user_row = cursor.fetchone()
 
             if not user_row:
-                logger.error(f"Пользователь {user_id} не найден в БД")
                 return
 
             db_user_id = user_row[0]
 
-            # Записываем клик (используем вашу структуру)
             cursor.execute("""
                 INSERT INTO link_clicks (user_id, session_id, offer_id, country, clicked_at)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (db_user_id, session_id, offer_id, country))
 
-            # Обновляем статистику пользователя
             cursor.execute("""
-                UPDATE users 
-                SET total_link_clicks = total_link_clicks + 1,
-                    last_activity = CURRENT_TIMESTAMP
+                UPDATE users SET total_link_clicks = total_link_clicks + 1, last_activity = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (db_user_id,))
 
-            # Отмечаем сессию как завершенную
             if session_id:
                 cursor.execute("""
-                    UPDATE sessions 
-                    SET completed = TRUE,
-                        clicked_offer_id = ?,
-                        session_end = CURRENT_TIMESTAMP
+                    UPDATE sessions SET completed = TRUE, clicked_offer_id = ?, session_end = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (offer_id, session_id))
 
             conn.commit()
-
             logger.info(f"🎯 КЛИК ПО ССЫЛКЕ: user={user_id}, offer={offer_id}, country={country}")
 
         except Exception as e:
@@ -231,60 +192,42 @@ class AnalyticsTracker:
     async def get_analytics_summary(self, days: int = 7) -> Dict[str, Any]:
         """Получение сводной аналитики за период"""
         conn = self.get_connection()
-        cursor = conn.cursor()
-
         try:
+            cursor = conn.cursor()
             stats = {}
 
-            # Общие показатели за период
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COUNT(DISTINCT u.telegram_id) as total_users,
                     COUNT(DISTINCT s.id) as total_sessions,
                     COUNT(DISTINCT lc.id) as total_clicks,
-                    COALESCE(AVG(CASE WHEN s.completed = 1 THEN 1.0 ELSE 0.0 END) * 100, 0) as session_completion_rate
+                    COALESCE(AVG(CASE WHEN s.completed = 1 THEN 1.0 ELSE 0.0 END) * 100, 0) as completion_rate
                 FROM users u
-                LEFT JOIN sessions s ON u.id = s.user_id 
-                    AND s.session_start >= datetime('now', '-{} days')
-                LEFT JOIN link_clicks lc ON u.id = lc.user_id 
-                    AND lc.clicked_at >= datetime('now', '-{} days')
-                WHERE u.created_at >= datetime('now', '-{} days') 
-                   OR u.last_activity >= datetime('now', '-{} days')
-            """.format(days, days, days, days))
+                LEFT JOIN sessions s ON u.id = s.user_id AND s.session_start >= datetime('now', '-{days} days')
+                LEFT JOIN link_clicks lc ON u.id = lc.user_id AND lc.clicked_at >= datetime('now', '-{days} days')
+                WHERE u.created_at >= datetime('now', '-{days} days') OR u.last_activity >= datetime('now', '-{days} days')
+            """)
 
             row = cursor.fetchone()
             if row:
-                stats['total_users'] = row[0]
-                stats['total_sessions'] = row[1]
-                stats['total_clicks'] = row[2]
-                stats['session_completion_rate'] = round(row[3], 2)
-                stats['click_through_rate'] = round((row[2] / row[1] * 100) if row[1] > 0 else 0, 2)
+                stats.update({
+                    'total_users': row[0],
+                    'total_sessions': row[1],
+                    'total_clicks': row[2],
+                    'session_completion_rate': round(row[3], 2),
+                    'click_through_rate': round((row[2] / row[1] * 100) if row[1] > 0 else 0, 2)
+                })
 
-            # Топ офферы по кликам
-            cursor.execute("""
-                SELECT offer_id, COUNT(*) as clicks
-                FROM link_clicks 
-                WHERE clicked_at >= datetime('now', '-{} days')
-                GROUP BY offer_id 
-                ORDER BY clicks DESC 
-                LIMIT 5
-            """.format(days))
+            # Топ офферы и страны
+            cursor.execute(
+                f"SELECT offer_id, COUNT(*) FROM link_clicks WHERE clicked_at >= datetime('now', '-{days} days') GROUP BY offer_id ORDER BY COUNT(*) DESC LIMIT 5")
+            stats['top_offers'] = [{'offer_id': r[0], 'clicks': r[1]} for r in cursor.fetchall()]
 
-            stats['top_offers'] = [{'offer_id': row[0], 'clicks': row[1]} for row in cursor.fetchall()]
-
-            # Распределение по странам
-            cursor.execute("""
-                SELECT country, COUNT(*) as clicks
-                FROM link_clicks 
-                WHERE clicked_at >= datetime('now', '-{} days')
-                GROUP BY country 
-                ORDER BY clicks DESC
-            """.format(days))
-
-            stats['country_distribution'] = [{'country': row[0], 'clicks': row[1]} for row in cursor.fetchall()]
+            cursor.execute(
+                f"SELECT country, COUNT(*) FROM link_clicks WHERE clicked_at >= datetime('now', '-{days} days') GROUP BY country ORDER BY COUNT(*) DESC")
+            stats['country_distribution'] = [{'country': r[0], 'clicks': r[1]} for r in cursor.fetchall()]
 
             return stats
-
         except Exception as e:
             logger.error(f"Ошибка получения аналитики: {e}")
             return {}
@@ -306,11 +249,8 @@ class OfferManager:
             with open(self.offers_file, 'r', encoding='utf-8') as f:
                 self.offers_data = json.load(f)
             logger.info(f"Загружено {len(self.offers_data.get('microloans', {}))} офферов")
-        except FileNotFoundError:
-            logger.warning(f"Файл {self.offers_file} не найден, создаем пустую базу")
-            self.offers_data = {"microloans": {}}
-        except json.JSONDecodeError as e:
-            logger.error(f"Ошибка парсинга JSON: {e}")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning(f"Ошибка загрузки офферов: {e}")
             self.offers_data = {"microloans": {}}
 
     def get_filtered_offers(self, user_criteria: Dict[str, Any]) -> List[Dict]:
@@ -318,53 +258,31 @@ class OfferManager:
         offers = []
 
         for offer_id, offer in self.offers_data.get('microloans', {}).items():
-            # Проверяем активность оффера
-            if not offer.get('status', {}).get('is_active', False):
+            # Базовые проверки
+            if (not offer.get('status', {}).get('is_active', False) or
+                    offer.get('priority', {}).get('manual_boost', 1) == 0 or
+                    user_criteria['country'] not in offer.get('geography', {}).get('countries', [])):
                 continue
 
-            # Проверяем ручной приоритет (0 = исключить)
-            manual_boost = offer.get('priority', {}).get('manual_boost', 1)
-            if manual_boost == 0:
-                continue
-
-            # Проверяем доступность для страны
-            countries = offer.get('geography', {}).get('countries', [])
-            if user_criteria['country'] not in countries:
-                continue
-
-            # Проверяем возрастные ограничения
+            # Проверки лимитов
             limits = offer.get('limits', {})
-            min_age = limits.get('min_age', 18)
-            max_age = limits.get('max_age', 70)
-            user_age = user_criteria['age']
-
-            if not (min_age <= user_age <= max_age):
+            if not (limits.get('min_age', 18) <= user_criteria['age'] <= limits.get('max_age', 70)):
                 continue
 
-            # Проверяем лимиты по сумме
-            min_amount = limits.get('min_amount', 0)
-            max_amount = limits.get('max_amount', 999999)
             requested_amount = user_criteria.get('amount', 0)
-
-            if not (min_amount <= requested_amount <= max_amount):
+            if not (limits.get('min_amount', 0) <= requested_amount <= limits.get('max_amount', 999999)):
                 continue
 
-            # Проверяем требование 0% если нужно
-            if user_criteria.get('zero_percent_only', False):
-                if not offer.get('zero_percent', False):
-                    continue
+            # Проверка 0%
+            if user_criteria.get('zero_percent_only', False) and not offer.get('zero_percent', False):
+                continue
 
-            # Рассчитываем приоритет
-            priority_score = self.calculate_priority(offer, user_criteria)
+            # Добавляем с приоритетом
             offer_copy = offer.copy()
-            offer_copy['calculated_priority'] = priority_score
-
+            offer_copy['calculated_priority'] = self.calculate_priority(offer, user_criteria)
             offers.append(offer_copy)
 
-        # Сортируем по приоритету (больше = лучше)
-        offers.sort(key=lambda x: x['calculated_priority'], reverse=True)
-
-        return offers[:10]  # Возвращаем топ-10 для листания
+        return sorted(offers, key=lambda x: x['calculated_priority'], reverse=True)[:10]
 
     def calculate_priority(self, offer: Dict, user_criteria: Dict) -> float:
         """Расчет приоритета оффера для пользователя"""
@@ -420,7 +338,10 @@ class LoanBot:
         """Создает постоянную клавиатуру для изменения настроек профиля и популярных предложений"""
         keyboard = ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(text="🔥 Популярные предложения")],
+                [
+                    KeyboardButton(text="🔥 Популярные предложения"),
+                    KeyboardButton(text="💰 Найти займ")
+                ],
                 [KeyboardButton(text="⚙️ Настройки профиля")],
                 [KeyboardButton(text="🚀 Поделиться ботом")]
             ],
@@ -439,6 +360,7 @@ class LoanBot:
         self.dp.message.register(self.handle_settings_button, F.text == "⚙️ Настройки профиля")
         self.dp.message.register(self.handle_popular_offers_button, F.text == "🔥 Популярные предложения")
         self.dp.message.register(self.handle_share_button, F.text == "🚀 Поделиться ботом")
+        self.dp.message.register(self.handle_find_loan_button, F.text == "💰 Найти займ")
 
         self.dp.callback_query.register(self.popular_offer_callback, F.data.startswith("popular_"))
         self.dp.callback_query.register(self.back_to_popular_callback, F.data == "back_to_popular")
@@ -488,29 +410,15 @@ class LoanBot:
     async def send_message_with_keyboard(self, chat_id: int, text: str, inline_keyboard: InlineKeyboardMarkup = None,
                                          parse_mode: str = "HTML"):
         """Отправляет сообщение с inline клавиатурой и устанавливает постоянную reply клавиатуру"""
-        # Отправляем сообщение с inline клавиатурой И постоянной reply клавиатурой одновременно
-        settings_keyboard = self.get_settings_keyboard()
+        message = await self.bot.send_message(chat_id=chat_id, text=text, reply_markup=inline_keyboard,
+                                              parse_mode=parse_mode)
 
-        message = await self.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=inline_keyboard,
-            parse_mode=parse_mode
-        )
-
-        # Устанавливаем постоянную reply клавиатуру отдельным техническим сообщением
-        tech_message = await self.bot.send_message(
-            chat_id=chat_id,
-            text=".",  # Минимальное сообщение
-            reply_markup=settings_keyboard
-        )
-
-        # Сразу удаляем техническое сообщение
+        # Устанавливаем постоянную клавиатуру техническим сообщением
+        tech_message = await self.bot.send_message(chat_id=chat_id, text=".", reply_markup=self.get_settings_keyboard())
         try:
             await tech_message.delete()
         except:
             pass
-
         return message
 
     async def popular_offer_callback(self, callback: CallbackQuery, state: FSMContext):
@@ -572,7 +480,7 @@ class LoanBot:
                 'term': 30,
                 'payment_method': 'card'
             }
-            search_text = "🚀 <b>БОЛЬШИЕ СУММЫ (до 500К)</b>"
+            search_text = "🚀 <b>СУММЫ до 500К</b>"
 
         elif offer_type == "no_docs":
             # Без документов
@@ -777,25 +685,64 @@ class LoanBot:
 
         await message.answer(share_text, reply_markup=keyboard, parse_mode="HTML")
 
+    async def handle_find_loan_button(self, message: Message, state: FSMContext):
+        """Обработчик кнопки найти займ - аналогично /start"""
+        profile = await self.profile_manager.get_or_create_profile(
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.first_name
+        )
+
+        await state.update_data(user_profile=profile.__dict__)
+
+        if profile.country and profile.age:
+            # ВОЗВРАЩАЮЩИЙСЯ ПОЛЬЗОВАТЕЛЬ с сохраненными настройками
+            country_name = "🇷🇺 России" if profile.country == "russia" else "🇰🇿 Казахстане"
+
+            welcome_text = (
+                f"💰 <b>Найдем займ с вашими настройками!</b>\n\n"
+                f"📍 Ваши настройки:\n"
+                f"🌍 Страна: {country_name}\n"
+                f"👤 Возраст: {profile.age} лет\n\n"
+                f"💰 Найти займы с этими настройками?"
+            )
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💰 ДА, НАЙТИ ЗАЙМЫ!",
+                                      callback_data=f"quick_search_{profile.country}_{profile.age}")],
+                [InlineKeyboardButton(text="⚙️ Изменить настройки", callback_data="change_profile_settings")]
+            ])
+
+        else:
+            # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
+            welcome_text = (
+                "🚀 <b>Найдем выгодный займ за 30 секунд!</b>\n\n"
+                "💰 Займы до 500,000₸ / 50,000₽ на карту за 5 минут\n"
+                "✅ Одобряем даже с плохой КИ\n"
+                "🆓 0% для новых клиентов\n"
+                "⚡ Без справок и поручителей\n\n"
+                "Сначала настроим ваш профиль:"
+            )
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🇷🇺 Россия", callback_data="country_russia")],
+                [InlineKeyboardButton(text="🇰🇿 Казахстан", callback_data="country_kazakhstan")]
+            ])
+
+            await state.set_state(LoanFlow.choosing_country)
+
+        await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
     async def edit_message_with_keyboard(self, message: Message, text: str,
                                          inline_keyboard: InlineKeyboardMarkup = None, parse_mode: str = "HTML"):
-        """Редактирует сообщение с inline клавиатурой, постоянная reply клавиатура остается"""
+        """Редактирует сообщение с inline клавиатурой"""
         try:
             if message.photo:
-                await message.edit_caption(
-                    caption=text,
-                    reply_markup=inline_keyboard,
-                    parse_mode=parse_mode
-                )
+                await message.edit_caption(caption=text, reply_markup=inline_keyboard, parse_mode=parse_mode)
             else:
-                await message.edit_text(
-                    text=text,
-                    reply_markup=inline_keyboard,
-                    parse_mode=parse_mode
-                )
+                await message.edit_text(text=text, reply_markup=inline_keyboard, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Ошибка редактирования сообщения: {e}")
-            # Если не можем редактировать - отправляем новое
             await message.answer(text, reply_markup=inline_keyboard, parse_mode=parse_mode)
 
     async def cmd_start(self, message: Message, state: FSMContext):
