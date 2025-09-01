@@ -3,10 +3,11 @@ from aiogram import Bot, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
+from main_bot.states.loan_flow import LoanFlow
 from main_bot.keyboards.inline_keyboards import get_popular_offers_keyboard
 from main_bot.utils.analytics import AnalyticsTracker
 from shared.offer_manager import OfferManager
-from user_profile_manager import UserProfileManager
+from shared.user_profile_manager import UserProfileManager
 
 logger = logging.getLogger(__name__)
 

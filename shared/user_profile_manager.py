@@ -217,6 +217,30 @@ class UserProfileManager:
         finally:
             conn.close()
 
+    async def clear_profile(self, telegram_id: int):
+        """Очистка профиля пользователя - сброс страны и возраста"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Обнуляем только настройки профиля, оставляя статистику
+            cursor.execute("""
+                UPDATE users 
+                SET country = NULL, 
+                    age = NULL, 
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE telegram_id = ?
+            """, (telegram_id,))
+
+            conn.commit()
+            logger.info(f"Профиль пользователя {telegram_id} очищен (country, age)")
+
+        except Exception as e:
+            logger.error(f"Ошибка очистки профиля {telegram_id}: {e}")
+            raise  # Пробрасываем исключение для обработки в вызывающем коде
+        finally:
+            conn.close()
+
     async def get_recent_user_activity(self, days: int = 7) -> Dict[str, int]:
         """Получение статистики активности за последние дни"""
         conn = self.get_connection()

@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from main_bot.states.loan_flow import LoanFlow
 from main_bot.keyboards.reply_keyboards import get_main_keyboard
 from main_bot.utils.analytics import AnalyticsTracker
-from user_profile_manager import UserProfileManager
+from shared.user_profile_manager import UserProfileManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,11 @@ class StartHandler:
         dp.callback_query.register(self.confirm_clear_profile_callback, F.data == "confirm_clear_profile")
         dp.callback_query.register(self.execute_clear_profile_callback, F.data == "execute_clear_profile")
         dp.callback_query.register(self.share_bot_callback, F.data == "share_bot")
+        dp.callback_query.register(self.back_to_main_callback, F.data == "back_to_main")
+
+        # Базовые коллбеки для начального флоу (если CallbackHandlers не подхватил)
+        dp.callback_query.register(self.country_callback, F.data.startswith("country_"))
+        dp.callback_query.register(self.age_callback, F.data.startswith("age_"))
 
     async def cmd_start(self, message: Message, state: FSMContext):
         """Команда /start - максимальная конверсия с первой секунды"""
@@ -108,7 +113,7 @@ class StartHandler:
         await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
 
         # Устанавливаем постоянную клавиатуру через незаметное сообщение
-        await message.answer("⬇️", reply_markup=get_main_keyboard())
+        await message.answer("​", reply_markup=get_main_keyboard())
 
     async def cmd_restart(self, message: Message, state: FSMContext):
         """Команда для полного рестарта бота"""
@@ -233,51 +238,22 @@ class StartHandler:
     async def execute_clear_profile_callback(self, callback: CallbackQuery, state: FSMContext):
         """Выполнение очистки профиля после подтверждения"""
         try:
-            logger.info(f"Начало очистки профиля для пользователя {callback.from_user.id}")
-
-            # Очищаем профиль пользователя
             await self.profile_manager.clear_profile(callback.from_user.id)
-            logger.info(f"Профиль пользователя {callback.from_user.id} очищен успешно")
-
-            # Очищаем состояние FSM
             await state.clear()
-            logger.info(f"Состояние FSM очищено для пользователя {callback.from_user.id}")
 
             success_text = (
                 "✅ <b>Профиль успешно очищен!</b>\n\n"
                 "🔄 Все настройки сброшены\n"
                 "📊 Статистика сохранена\n\n"
-                "Настроим профиль заново?"
+                "Используйте кнопки ниже для поиска займов"
             )
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🇷🇺 Россия", callback_data="country_russia")],
-                [InlineKeyboardButton(text="🇰🇿 Казахстан", callback_data="country_kazakhstan")]
-            ])
-
-            await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
-            await state.set_state(LoanFlow.choosing_country)
+            # Удаляем inline клавиатуру, показываем только сообщение
+            await callback.message.edit_text(success_text, parse_mode="HTML")
             await callback.answer("Профиль очищен!")
 
         except Exception as e:
-            logger.error(f"Ошибка очистки профиля для пользователя {callback.from_user.id}: {e}")
-            logger.error(f"Тип ошибки: {type(e).__name__}")
-            logger.error(f"Детали ошибки: {str(e)}")
-
-            error_text = (
-                "❌ <b>Ошибка очистки профиля</b>\n\n"
-                "Попробуйте позже или обратитесь к администратору"
-            )
-
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
-            ])
-
-            try:
-                await callback.message.edit_text(error_text, reply_markup=keyboard, parse_mode="HTML")
-            except:
-                await callback.message.answer(error_text, reply_markup=keyboard, parse_mode="HTML")
-
+            logger.error(f"Ошибка очистки профиля: {e}")
             await callback.answer("Ошибка очистки профиля", show_alert=True)
 
     async def share_bot_callback(self, callback: CallbackQuery):
@@ -304,3 +280,56 @@ class StartHandler:
 
         await callback.message.edit_text(share_text, reply_markup=keyboard, parse_mode="HTML")
         await callback.answer()
+
+    async def country_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Базовый обработчик выбора страны для начального флоу"""
+        country = callback.data.split("_")[1]
+        await state.update_data(country=country)
+
+        # Сохраняем в профиле
+        await self.profile_manager.update_profile_preferences(
+            callback.from_user.id,
+            country=country
+        )
+
+        country_name = "🇷🇺 России" if country == "russia" else "🇰🇿 Казахстане"
+        text = f"Отлично! Подбираем займы в {country_name}\n\n👤 Укажите ваш возраст:"
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="18-25 лет", callback_data="age_22")],
+            [InlineKeyboardButton(text="26-35 лет", callback_data="age_30")],
+            [InlineKeyboardButton(text="36-50 лет", callback_data="age_43")],
+            [InlineKeyboardButton(text="51+ лет", callback_data="age_60")]
+        ])
+
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await state.set_state(LoanFlow.choosing_age)
+        await callback.answer()
+
+    async def age_callback(self, callback: CallbackQuery, state: FSMContext):
+        """Базовый обработчик выбора возраста для начального флоу"""
+        age = int(callback.data.split("_")[1])
+        await state.update_data(age=age)
+
+        # Сохраняем в профиле
+        await self.profile_manager.update_profile_preferences(
+            callback.from_user.id,
+            age=age
+        )
+
+        # После выбора возраста переходим к основному функционалу
+        success_text = (
+            f"✅ <b>Профиль настроен!</b>\n\n"
+            f"🌍 Страна: {'🇷🇺 Россия' if (await state.get_data()).get('country') == 'russia' else '🇰🇿 Казахстан'}\n"
+            f"🎂 Возраст: {age} лет\n\n"
+            "Теперь можно искать займы!"
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 НАЙТИ ЗАЙМЫ",
+                                  callback_data=f"quick_search_{(await state.get_data()).get('country')}_{age}")],
+            [InlineKeyboardButton(text="🔥 Популярные предложения", callback_data="back_to_popular")]
+        ])
+
+        await callback.message.edit_text(success_text, reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer("Профиль настроен!")

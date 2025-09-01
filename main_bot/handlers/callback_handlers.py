@@ -9,7 +9,7 @@ from main_bot.keyboards.inline_keyboards import get_popular_offers_keyboard
 from main_bot.utils.analytics import AnalyticsTracker
 from main_bot.utils.offer_display import OfferDisplay
 from shared.offer_manager import OfferManager
-from user_profile_manager import UserProfileManager
+from shared.user_profile_manager import UserProfileManager
 
 logger = logging.getLogger(__name__)
 
